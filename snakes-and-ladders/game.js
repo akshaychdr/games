@@ -1445,6 +1445,7 @@ window.__saanpApi = {
   snakePoints,
   normalAt,
   tangentAt,
+  center,
   SNAKES,
   KURTA,
   LOOK,
