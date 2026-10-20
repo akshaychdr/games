@@ -96,7 +96,6 @@ art.ready = Promise.all([
 ]).then(([boardImg, cobra, strike, ladder, idle, hop, scared, cheer]) => {
   art.board = boardImg;
   art.cobra = cobra;
-  splitCobra(cobra);
   art.strike = strike;
   art.ladder = ladder;
   const base = { idle, hop, scared, cheer };
@@ -767,154 +766,43 @@ function strikeOf(snake) {
   return out;
 }
 
-function trimCanvas(img, sx, sy, sw, sh) {
-  const c = document.createElement("canvas");
-  c.width = sw;
-  c.height = sh;
-  const g = c.getContext("2d");
-  g.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-  const data = g.getImageData(0, 0, sw, sh).data;
-  let minX = sw;
-  let minY = sh;
-  let maxX = 0;
-  let maxY = 0;
-  for (let y = 0; y < sh; y++) {
-    for (let x = 0; x < sw; x++) {
-      if (data[(y * sw + x) * 4 + 3] > 24) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  if (maxX < minX) return c;
-  const out = document.createElement("canvas");
-  out.width = maxX - minX + 1;
-  out.height = maxY - minY + 1;
-  out.getContext("2d").drawImage(c, minX, minY, out.width, out.height, 0, 0, out.width, out.height);
-  return out;
-}
-
-function splitCobra(img) {
-  const h = img.height;
-  const headH = Math.round(h * 0.15);
-  art.snakeHead = trimCanvas(img, 0, 0, img.width, headH);
-  const bodyY = Math.round(h * 0.26);
-  const bodyH = Math.round(h * 0.3);
-  const body = trimCanvas(img, 0, bodyY, img.width, bodyH);
-  const loop = document.createElement("canvas");
-  loop.width = body.width;
-  loop.height = body.height * 2;
-  const lg = loop.getContext("2d");
-  lg.drawImage(body, 0, 0);
-  lg.save();
-  lg.translate(0, body.height * 2);
-  lg.scale(1, -1);
-  lg.drawImage(body, 0, 0);
-  lg.restore();
-  art.snakeBody = loop;
-  art.snakeBodyTile = body.height;
-  const tailY = Math.round(h * 0.8);
-  art.snakeTail = trimCanvas(img, 0, tailY, img.width, h - tailY);
-}
-
-function pathLength(pts) {
-  let n = 0;
-  for (let i = 1; i < pts.length; i++) n += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
-  return n;
-}
-
-function drawBodyStrip(ctx, img, sy, sh, w, destH) {
-  const H = img.height;
-  const srcH = Math.max(0.5, sh);
-  if (sy + srcH <= H) {
-    ctx.drawImage(img, 0, sy, img.width, srcH, -w / 2, -destH / 2, w, destH);
-    return;
-  }
-  const first = H - sy;
-  const destFirst = destH * (first / srcH);
-  ctx.drawImage(img, 0, sy, img.width, first, -w / 2, -destH / 2, w, destFirst);
-  ctx.drawImage(img, 0, 0, img.width, srcH - first, -w / 2, -destH / 2 + destFirst, w, destH - destFirst);
-}
-
 function drawSnake(ctx, snake, L, t) {
   const phase = strikeOf(snake);
   const head = center(snake.head, L);
-  if (!art.snakeBody) return { phase, head };
+  if (!art.cobra) return { phase, head };
   const pts = snakeRoute(snake, L);
-  const total = pathLength(pts);
-  const body = art.snakeBody;
-  const tile = art.snakeBodyTile;
-  const pxPerSrc = (L.cell * 0.45) / body.width;
-  const tailImg = art.snakeTail;
-  const tailW = L.cell * 0.2;
-  const tailH = tailImg ? tailW * (tailImg.height / tailImg.width) : 0;
-  const tailFrac = Math.min(0.42, tailH / (total || 1));
-  const endU = Math.max(0.45, 1 - tailFrac * 0.85);
+  const img = art.cobra;
+  const width = L.cell * (2.55 + Math.sin(t * 1.5 + snake.head) * 0.04);
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.beginPath();
-  const off = L.cell * 0.03;
+  const off = L.cell * 0.07;
   ctx.moveTo(pts[0].x + off, pts[0].y + off);
-  for (let i = 1; i < pts.length; i++) {
-    if (i / (pts.length - 1) > endU) break;
-    ctx.lineTo(pts[i].x + off, pts[i].y + off);
-  }
-  ctx.strokeStyle = "rgba(42, 28, 16, 0.18)";
-  ctx.lineWidth = L.cell * 0.22;
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x + off, pts[i].y + off);
+  ctx.strokeStyle = "rgba(36, 22, 12, 0.35)";
+  ctx.lineWidth = width * 0.46;
   ctx.stroke();
   ctx.restore();
-  const startU = 0.04;
-  const slices = Math.max(8, Math.round(total / Math.max(3, L.cell * 0.11)));
+  const slices = 28;
+  const turn = Math.sin(t * 0.85 + snake.head) * 0.4;
   for (let i = slices - 1; i >= 0; i--) {
-    const t0 = startU + (i / slices) * (endU - startU);
-    const t1 = startU + ((i + 1) / slices) * (endU - startU);
+    const t0 = i / slices;
+    const t1 = (i + 1) / slices;
     const p0 = pointAlong(pts, t0);
     const p1 = pointAlong(pts, t1);
-    const seg = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-    if (seg < 0.4) continue;
-    const tm = (t0 + t1) / 2;
-    const w = L.cell * (0.45 - 0.3 * tm);
     const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x) - Math.PI / 2;
-    const destH = seg + 0.75;
-    const sy = ((t0 * total) / pxPerSrc) % (tile * 2);
-    const sh = destH / pxPerSrc;
+    const headTurn = t0 < 0.14 ? turn * (1 - t0 / 0.14) : 0;
+    const seg = Math.hypot(p1.x - p0.x, p1.y - p0.y) * 1.35;
+    const sy = Math.min(img.height - 1, Math.floor(t0 * img.height));
+    const sh = Math.max(1, Math.min(img.height - sy, Math.ceil((t1 - t0) * img.height) + 3));
     ctx.save();
     ctx.translate((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
-    ctx.rotate(ang);
-    drawBodyStrip(ctx, body, sy, sh, w, destH);
+    ctx.rotate(ang + headTurn);
+    ctx.drawImage(img, 0, sy, img.width, sh, -width / 2, -seg / 2, width, seg);
     ctx.restore();
   }
-  if (tailImg) {
-    const tip = pointAlong(pts, 1);
-    const back = pointAlong(pts, Math.max(0, 1 - tailFrac));
-    const ang = Math.atan2(tip.y - back.y, tip.x - back.x) - Math.PI / 2;
-    ctx.save();
-    ctx.translate(tip.x, tip.y);
-    ctx.rotate(ang);
-    ctx.drawImage(tailImg, -tailW / 2, -tailH, tailW, tailH);
-    ctx.restore();
-  }
-  return { phase, head, pts };
-}
-
-function drawSnakeHead(ctx, snake, L, t) {
-  const img = art.snakeHead;
-  if (!img) return;
-  const pts = snakeRoute(snake, L);
-  const p0 = pts[0];
-  const p1 = pointAlong(pts, 0.12);
-  const hw = L.cell * 0.9;
-  const hh = hw * (img.height / img.width);
-  const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x) - Math.PI / 2;
-  const turn = Math.sin(t * 0.85 + snake.head) * 0.18;
-  ctx.save();
-  ctx.translate(p0.x, p0.y);
-  ctx.rotate(ang + turn);
-  ctx.drawImage(img, -hw / 2, -hh, hw, hh);
-  ctx.restore();
+  return { phase, head: pts[0] };
 }
 
 function drawRisingCobra(ctx, head, cell, phase) {
@@ -1230,13 +1118,7 @@ function render() {
   ctx.translate(-L.w / 2 + Math.sin(t * 70) * shake * L.cell * 0.07, -L.h / 2 + Math.cos(t * 60) * shake * L.cell * 0.04);
   drawBoard(ctx, L, t, flick);
   for (const lad of LADDERS) drawLadder(ctx, lad, L);
-  const snakeOrder = SNAKES.slice().sort((a, b) => {
-    const ay = center(a.head, L).y + center(a.tail, L).y;
-    const by = center(b.head, L).y + center(b.tail, L).y;
-    return ay - by;
-  });
-  for (const sn of snakeOrder) drawSnake(ctx, sn, L, t);
-  for (const sn of snakeOrder) drawSnakeHead(ctx, sn, L, t);
+  for (const sn of SNAKES) drawSnake(ctx, sn, L, t);
   drawFog(ctx, L, t);
   drawRangoli(ctx, L);
   if (G) {
