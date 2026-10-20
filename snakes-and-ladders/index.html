@@ -171,8 +171,7 @@
     }
     .card h2 { margin: 0 0 8px; font-size: 22px; }
     .rules, .card p { margin: 8px 0 0; font-size: 14px; line-height: 1.4; color: #3a2e24; }
-    .count { display: flex; gap: 8px; margin: 10px 0; }
-    .count button, .prow .cpu, .card .go {
+    .prow .cpu, .card .go {
       min-height: 44px;
       border-radius: 12px;
       border: 1px solid #5a3e2b;
@@ -181,8 +180,7 @@
       font: inherit;
       font-size: 16px;
     }
-    .count button { flex: 1; }
-    .count button.on, .prow .cpu[aria-pressed="true"] {
+    .prow .cpu[aria-pressed="true"] {
       background: #4f6d62;
       color: #f4ecdc;
       border-color: #4f6d62;
@@ -269,11 +267,6 @@
   <section id="menu">
     <div class="card">
       <h2>Who is playing?</h2>
-      <div class="count" role="group" aria-label="Number of players">
-        <button type="button" data-n="2" class="on">2</button>
-        <button type="button" data-n="3">3</button>
-        <button type="button" data-n="4">4</button>
-      </div>
       <div id="rows"></div>
       <button id="start" class="go" type="button">Start</button>
       <p class="rules">Hop square by square to 100. Ladders lift you. Snakes swallow you. A 6 earns another roll. You need the exact roll to finish.</p>

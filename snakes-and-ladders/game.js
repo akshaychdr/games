@@ -9,7 +9,7 @@ const LOOK = [
 ];
 const WASH = ["#f4ecdc", "#d9b59c", "#c9d4c2", "#e6d3b2"];
 const CONFETTI = ["#d4783a", "#b84a4a", "#4f6d62", "#e6d3a4", "#f4ecdc", "#7a5a86"];
-const NAMES = ["Anaya", "Vihaan", "Meera", "Kabir"];
+const NAMES = ["Anaya", "Vihaan"];
 
 const SNAKES = [
   { head: 16, tail: 6, color: "#6e8f74", scale: "#d9d4bc", c1: 0.35, n1: 0.9, c2: 0.7, n2: -0.35 },
@@ -47,6 +47,8 @@ const PIPS = {
 
 const SPRITE_NAMES = ["idle", "hop", "scared", "cheer", "climb", "run"];
 const SPRITES = { boy: {}, girl: {} };
+let spriteCanonBodyPx = 222;
+let spriteGenderMul = { boy: 1, girl: 1 };
 const RUN_SEC_PER_CELL = 0.17;
 
 const board = document.getElementById("board");
@@ -934,9 +936,20 @@ function loadSpriteSheet(gender, name) {
     }));
 }
 
+function initSpriteBodyMetrics() {
+  const boyIdle = SPRITES.boy.idle.bodyHeightPx || SPRITES.boy.idle.frameHeight;
+  const girlIdle = SPRITES.girl.idle.bodyHeightPx || SPRITES.girl.idle.frameHeight;
+  spriteCanonBodyPx = (boyIdle + girlIdle) / 2;
+  spriteGenderMul = {
+    boy: spriteCanonBodyPx / boyIdle,
+    girl: spriteCanonBodyPx / girlIdle,
+  };
+}
+
 const spritesReady = Promise.all(
   ["boy", "girl"].flatMap((g) => SPRITE_NAMES.map((n) => loadSpriteSheet(g, n))),
 ).then(() => {
+  initSpriteBodyMetrics();
   artLoaded = true;
   syncHud();
 }).catch((err) => {
@@ -970,10 +983,12 @@ function spriteAnimFor(player, pose) {
 
 function spriteBodyScale(sheet, gender, L, gulp) {
   const idle = SPRITES[gender].idle;
-  const ref = idle.bodyHeightPx || idle.frameHeight;
+  const idleBh = idle.bodyHeightPx || idle.frameHeight;
   const bh = sheet.bodyHeightPx || sheet.frameHeight;
-  const norm = ref / bh;
-  return (L.cell * 1.1 * gulp) / ref * norm;
+  const target = L.cell * 1.1 * gulp;
+  const animNorm = idleBh / bh;
+  const genderMul = spriteGenderMul[gender] || 1;
+  return (target / spriteCanonBodyPx) * animNorm * genderMul;
 }
 
 function spriteFrame(meta, anim) {
@@ -1037,8 +1052,9 @@ function drawKid(ctx, player, L) {
 
   drawFeetShadow(ctx, player, pose, drawW, L);
 
+  const feetFromTop = (sheet.bodyHeightPx || fh) * bodyScale;
   const drawX = -drawW / 2;
-  const drawY = -drawH;
+  const drawY = -feetFromTop;
   ctx.drawImage(sheet.img, fi * fw, 0, fw, fh, drawX, drawY, drawW, drawH);
   ctx.restore();
 }
@@ -1382,13 +1398,13 @@ function readPlayers() {
   }));
 }
 
-function renderRows(n) {
+function setupPlayerRows() {
   const rows = document.getElementById("rows");
   rows.innerHTML = "";
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < 2; i++) {
     const row = document.createElement("div");
     row.className = "prow";
-    const cpu = i % 2 === 1;
+    const cpu = i === 1;
     row.innerHTML =
       "<i style='background:" + KURTA[i] + "'></i>" +
       "<input maxlength='12' value='" + NAMES[i] + "' aria-label='Player " + (i + 1) + " name'>" +
@@ -1401,14 +1417,6 @@ function renderRows(n) {
     rows.appendChild(row);
   }
 }
-
-document.querySelectorAll(".count button").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".count button").forEach((b) => b.classList.remove("on"));
-    btn.classList.add("on");
-    renderRows(Number(btn.dataset.n));
-  });
-});
 
 document.getElementById("start").addEventListener("click", () => {
   audio.unlock();
@@ -1449,7 +1457,7 @@ muteBtn.addEventListener("click", () => {
   try { localStorage.setItem("saanp-mute", audio.muted ? "1" : "0"); } catch (err) {}
 });
 
-renderRows(2);
+setupPlayerRows();
 
 let last = performance.now();
 function frame(now) {
