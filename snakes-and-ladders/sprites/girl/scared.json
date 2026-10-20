@@ -1,0 +1,11 @@
+{
+ "frames": 24,
+ "fps": 12,
+ "frameWidth": 128,
+ "frameHeight": 256,
+ "sheetWidth": 3072,
+ "layout": "horizontal",
+ "loop": false,
+ "bodyHeightPx": 214.8,
+ "bodyHeightNote": "head-top to feet, in frame pixels, median over frames"
+}
