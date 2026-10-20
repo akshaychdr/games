@@ -45,12 +45,16 @@ const PIPS = {
   6: [[0, 0], [0, 1], [0, 2], [2, 0], [2, 1], [2, 2]],
 };
 
-const SPRITE_NAMES = ["idle", "hop", "scared", "cheer", "climb"];
+const SPRITE_NAMES = ["idle", "hop", "scared", "cheer", "climb", "run"];
 const SPRITES = { boy: {}, girl: {} };
-/** Visual body height in idle frames (px), feet at bottom of 256px strip. */
-const IDLE_BODY_PX = 224;
+const RUN_SEC_PER_CELL = 0.17;
+const CAM_ZOOM_NARROW = 1.4;
+const CAM_ZOOM_WIDE = 1.8;
+const CAM_SETTLE_SEC = 0.4;
+const CAM_TILT_DEG = 12;
 
 const board = document.getElementById("board");
+const boardScene = document.getElementById("board-scene");
 const dieCanvas = document.getElementById("die");
 let artLoaded = false;
 const diceBtn = document.getElementById("dice");
@@ -228,6 +232,50 @@ function foot(player, square, L, pretend) {
   return { x: r.x + r.w * 0.5 + (idx - (group.length - 1) / 2) * spread, y: r.y + r.h * 0.96 };
 }
 
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function boardBounds(L) {
+  return { minX: L.ox, minY: L.oy, maxX: L.ox + L.size, maxY: L.oy + L.size };
+}
+
+function narrowViewport() {
+  return window.innerWidth < 900;
+}
+
+function buildRunPath(step, L) {
+  const pts = [foot(step.player, step.from, L, false)];
+  for (let s = step.from + 1; s <= step.to; s++) pts.push(foot(step.player, s, L, true));
+  return pts;
+}
+
+function pathLength(pts) {
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  return len;
+}
+
+function pointAtDist(pts, dist) {
+  if (pts.length === 1) return { x: pts[0].x, y: pts[0].y, dirX: 1, dirY: 0 };
+  let left = dist;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dy = pts[i].y - pts[i - 1].y;
+    const seg = Math.hypot(dx, dy) || 0.0001;
+    if (left <= seg) {
+      const t = left / seg;
+      return { x: lerp(pts[i - 1].x, pts[i].x, t), y: lerp(pts[i - 1].y, pts[i].y, t), dirX: dx / seg, dirY: dy / seg };
+    }
+    left -= seg;
+  }
+  const last = pts.length - 1;
+  const dx = pts[last].x - pts[last - 1].x;
+  const dy = pts[last].y - pts[last - 1].y;
+  const seg = Math.hypot(dx, dy) || 1;
+  return { x: pts[last].x, y: pts[last].y, dirX: dx / seg, dirY: dy / seg };
+}
+
 function snakeGeom(snake, L) {
   const a = center(snake.head, L);
   const b = center(snake.tail, L);
@@ -307,7 +355,15 @@ function begin(players) {
     fx: [],
     dieFx: [],
     glow: {},
-    cam: { zoom: 1, rot: 0 },
+    cam: {
+      zoom: 1,
+      rot: 0,
+      focusX: null,
+      focusY: null,
+      tilt: 0,
+      following: false,
+      settleAt: 0,
+    },
     msg: "",
     winner: null,
     t: 0,
@@ -340,21 +396,76 @@ function performRoll() {
   audio.rattle();
 }
 
+function moveDur(base, cpu) {
+  const k = reduceMotion ? 0.35 : 1;
+  const cpuK = cpu ? 0.62 : 1;
+  return base * k * cpuK;
+}
+
 function planMove(roll) {
   const p = current();
   const dest = p.pos + roll;
   G.msg = p.name + " rolled " + roll;
+  G.cam.following = true;
   if (dest > 100) {
-    G.queue.push({ kind: "overshoot", player: p, dur: 0.62 });
+    G.queue.push({ kind: "overshoot", player: p, dur: moveDur(0.62, p.cpu) });
     G.queue.push({ kind: "end", bonus: roll === 6 });
   } else {
-    for (let s = p.pos + 1; s <= dest; s++) {
-      G.queue.push({ kind: "hop", player: p, from: s - 1, to: s, dur: reduceMotion ? 0.08 : 0.2 });
+    const from = p.pos;
+    const steps = dest - from;
+    if (steps > 1) {
+      const cells = steps - 1;
+      G.queue.push({
+        kind: "run",
+        player: p,
+        from,
+        to: dest - 1,
+        dur: moveDur(cells * RUN_SEC_PER_CELL + 0.08, p.cpu),
+      });
     }
+    G.queue.push({
+      kind: "hop",
+      player: p,
+      from: dest - 1,
+      to: dest,
+      landing: true,
+      dur: moveDur(0.34, p.cpu),
+    });
     const lad = LADDERS.find((l) => l.from === dest);
     const sn = SNAKES.find((s) => s.head === dest);
-    if (lad) G.queue.push({ kind: "ladder", player: p, from: dest, to: lad.to, dur: reduceMotion ? 0.45 : 1.75 });
-    else if (sn) G.queue.push({ kind: "snake", player: p, from: dest, to: sn.tail, dur: reduceMotion ? 0.5 : 2.2 });
+    if (lad) {
+      G.queue.push({
+        kind: "ladder",
+        player: p,
+        from: dest,
+        to: lad.to,
+        dur: moveDur(1.75, p.cpu),
+      });
+      G.queue.push({
+        kind: "hop",
+        player: p,
+        from: lad.to,
+        to: lad.to,
+        dismount: true,
+        dur: moveDur(0.36, p.cpu),
+      });
+    } else if (sn) {
+      G.queue.push({
+        kind: "snake",
+        player: p,
+        from: dest,
+        to: sn.tail,
+        dur: moveDur(2.2, p.cpu),
+      });
+      G.queue.push({
+        kind: "hop",
+        player: p,
+        from: sn.tail,
+        to: sn.tail,
+        dismount: true,
+        dur: moveDur(0.36, p.cpu),
+      });
+    }
     G.queue.push({ kind: "arrive" });
   }
   advance();
@@ -382,6 +493,7 @@ function celebrate(p) {
   G.step = null;
   G.queue = [];
   G.winT = G.t;
+  G.cam.settleAt = G.t + CAM_SETTLE_SEC;
   G.msg = p.name + " reaches 100!";
   audio.dhol();
   for (let i = 0; i < 80; i++) {
@@ -417,7 +529,7 @@ function advance() {
   G.step = Object.assign({ t: 0 }, next);
   G.seen.push(next.kind);
   G.phase = "play";
-  if (next.kind === "hop") G.glow[next.to] = 1;
+  if (next.kind === "hop" && next.landing) G.glow[next.to] = 1;
   if (next.kind === "ladder") {
     G.msg = next.player.name + " climbs a ladder!";
     audio.climb();
@@ -453,6 +565,8 @@ function endTurn(bonus) {
   G.turn = (G.turn + 1) % G.players.length;
   G.phase = "roll";
   G.msg = current().name + "'s turn";
+  G.cam.settleAt = G.t + CAM_SETTLE_SEC;
+  G.cam.following = true;
   scheduleCpu();
 }
 
@@ -463,7 +577,7 @@ function finishStep() {
     planMove(step.value);
     return;
   }
-  if (step.kind === "hop") step.player.pos = step.to;
+  if (step.kind === "run" || step.kind === "hop") step.player.pos = step.to;
   if (step.kind === "ladder" || step.kind === "snake") step.player.pos = step.to;
   advance();
 }
@@ -485,6 +599,51 @@ function spawnDust(square) {
   }
 }
 
+function followStepActive() {
+  if (!G) return false;
+  const s = G.step;
+  if (s && ["run", "hop", "ladder", "snake", "overshoot"].includes(s.kind)) return true;
+  return G.cam.following && G.t < G.cam.settleAt;
+}
+
+function updateCamera(dt) {
+  if (!G) return;
+  const L = layout();
+  if (G.cam.focusX == null) {
+    G.cam.focusX = L.w / 2;
+    G.cam.focusY = L.h / 2;
+  }
+  const cpu = current().cpu;
+  const rate = (cpu ? 8.5 : 5.2) * (reduceMotion ? 2 : 1);
+  const follow = !reduceMotion && followStepActive();
+  if (!follow && G.t >= G.cam.settleAt) G.cam.following = false;
+  const wantZ = follow ? (narrowViewport() ? CAM_ZOOM_NARROW : CAM_ZOOM_WIDE) : 1;
+  const wantTilt = follow ? CAM_TILT_DEG : 0;
+  let tx = G.cam.focusX;
+  let ty = G.cam.focusY;
+  if (follow) {
+    const mover = G.step && G.step.player ? G.step.player : current();
+    const pose = poseFor(mover, L);
+    if (pose) {
+      tx = pose.x + (pose.dirX || 0) * L.cell * 0.34;
+      ty = pose.y + (pose.dirY || 0) * L.cell * 0.34;
+    }
+  } else {
+    tx = L.w / 2;
+    ty = L.h / 2;
+  }
+  const z = G.cam.zoom + (wantZ - G.cam.zoom) * Math.min(1, dt * rate);
+  G.cam.zoom = z;
+  const hw = (L.w / 2) / Math.max(1, z);
+  const hh = (L.h / 2) / Math.max(1, z);
+  const b = boardBounds(L);
+  G.cam.focusX += (clamp(tx, b.minX + hw, b.maxX - hw) - G.cam.focusX) * Math.min(1, dt * rate);
+  G.cam.focusY += (clamp(ty, b.minY + hh, b.maxY - hh) - G.cam.focusY) * Math.min(1, dt * rate);
+  G.cam.tilt += (wantTilt - G.cam.tilt) * Math.min(1, dt * rate);
+  G.cam.rot += (0 - G.cam.rot) * Math.min(1, dt * rate);
+  if (boardScene) boardScene.style.transform = `rotateX(${G.cam.tilt.toFixed(2)}deg)`;
+}
+
 function tick(dt) {
   if (!G) return;
   G.t += dt;
@@ -493,7 +652,7 @@ function tick(dt) {
     step.t += dt;
     if (step.kind === "hop" && !step.dusted && step.t > step.dur * 0.86) {
       step.dusted = true;
-      spawnDust(step.to);
+      spawnDust(step.to || step.player.pos);
       audio.hop();
     }
     if (step.kind === "dice" && step.value === 6 && !step.sparked && step.t > step.dur * 0.7) {
@@ -510,10 +669,7 @@ function tick(dt) {
     }
     if (step.t >= step.dur) finishStep();
   }
-  const wantZ = G.step && G.step.kind === "ladder" ? 1 + 0.075 * Math.sin(Math.min(1, G.step.t / G.step.dur) * Math.PI) : 1;
-  const wantR = G.step && G.step.kind === "ladder" ? 0.04 * Math.sin(Math.min(1, G.step.t / G.step.dur) * Math.PI) : 0;
-  G.cam.zoom += (wantZ - G.cam.zoom) * Math.min(1, dt * 5);
-  G.cam.rot += (wantR - G.cam.rot) * Math.min(1, dt * 5);
+  updateCamera(dt);
   for (const k of Object.keys(G.glow)) {
     G.glow[k] -= dt * 0.85;
     if (G.glow[k] <= 0) delete G.glow[k];
@@ -863,13 +1019,6 @@ const spritesReady = Promise.all(
   console.error("sprite load failed", err);
 });
 
-function ringColor(kurta) {
-  const base = KURTA[kurta];
-  if (kurta < 2) return base;
-  const accent = LOOK[kurta].accent;
-  return accent;
-}
-
 function spriteAnimFor(player, pose) {
   const step = G && G.step;
   if (pose.gulp < 0.04) return null;
@@ -884,11 +1033,23 @@ function spriteAnimFor(player, pose) {
     if (pose.arm === 2) return { name: "cheer", phase: G.t, loop: true };
     return { name: "climb", phase: G.t, loop: true };
   }
+  if (step && step.kind === "run" && step.player === player) {
+    return { name: "run", phase: G.t, loop: true };
+  }
   if (step && step.kind === "hop" && step.player === player) {
     const u = Math.min(1, step.t / step.dur);
-    return { name: "hop", phase: u, loop: false, hop: true };
+    const air = pose.airborne > 0.35;
+    return { name: air && u < 0.72 ? "cheer" : "hop", phase: u, loop: false, hop: true };
   }
   return { name: "idle", phase: G.t + player.id * 0.37, loop: true };
+}
+
+function spriteBodyScale(sheet, gender, L, gulp) {
+  const idle = SPRITES[gender].idle;
+  const ref = idle.bodyHeightPx || idle.frameHeight;
+  const bh = sheet.bodyHeightPx || sheet.frameHeight;
+  const norm = ref / bh;
+  return (L.cell * 1.1 * gulp) / ref * norm;
 }
 
 function spriteFrame(meta, anim) {
@@ -898,6 +1059,32 @@ function spriteFrame(meta, anim) {
   const f = anim.phase * meta.fps;
   if (anim.loop) return Math.floor(f) % meta.frames;
   return Math.min(meta.frames - 1, Math.floor(f));
+}
+
+function drawFeetShadow(ctx, player, pose, drawW, L) {
+  const air = pose.airborne || 0;
+  const alpha = 0.25 * (1 - air * 0.88);
+  const sx = drawW * 0.24 * (1 - air * 0.42);
+  const sy = L.cell * 0.06 * (1 - air * 0.42);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(sx, sy));
+  g.addColorStop(0, `rgba(18, 10, 6, ${alpha})`);
+  g.addColorStop(0.5, `rgba(18, 10, 6, ${alpha * 0.4})`);
+  g.addColorStop(1, "rgba(18, 10, 6, 0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.ellipse(0, L.cell * 0.012, sx, sy, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const active = G && G.players[G.turn] === player && G.phase !== "win";
+  if (active) {
+    const warm = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(sx * 1.5, sy * 1.5));
+    warm.addColorStop(0, `rgba(255, 196, 120, ${0.14 * (1 - air)})`);
+    warm.addColorStop(0.55, `rgba(255, 170, 90, ${0.06 * (1 - air)})`);
+    warm.addColorStop(1, "rgba(255, 160, 80, 0)");
+    ctx.fillStyle = warm;
+    ctx.beginPath();
+    ctx.ellipse(0, L.cell * 0.01, sx * 1.35, sy * 1.35, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 function drawKid(ctx, player, L) {
@@ -911,31 +1098,20 @@ function drawKid(ctx, player, L) {
   const fi = spriteFrame(sheet, anim);
   const fw = sheet.frameWidth;
   const fh = sheet.frameHeight;
-  const bodyScale = (L.cell * 1.1 * pose.gulp) / IDLE_BODY_PX;
-  const drawH = fh * bodyScale;
-  const drawW = fw * bodyScale;
+  const bodyScale = spriteBodyScale(sheet, gender, L, pose.gulp);
+  let drawH = fh * bodyScale;
+  let drawW = fw * bodyScale;
+  if (pose.sx !== 1 || pose.sy !== 1) {
+    drawW *= pose.sx;
+    drawH *= pose.sy;
+  }
 
   ctx.save();
   ctx.translate(pose.x, pose.y);
   if (pose.rot) ctx.rotate(pose.rot);
+  if (pose.facingRight === false) ctx.scale(-1, 1);
 
-  ctx.fillStyle = "rgba(70, 48, 30, 0.28)";
-  ctx.beginPath();
-  ctx.ellipse(0, L.cell * 0.01, drawW * 0.22, L.cell * 0.055, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = KURTA[player.kurta];
-  ctx.globalAlpha = 0.32;
-  ctx.beginPath();
-  ctx.ellipse(0, L.cell * 0.008, drawW * 0.3, L.cell * 0.042, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 0.95;
-  ctx.strokeStyle = ringColor(player.kurta);
-  ctx.lineWidth = Math.max(1.5, L.cell * 0.04);
-  ctx.beginPath();
-  ctx.ellipse(0, L.cell * 0.008, drawW * 0.3, L.cell * 0.042, 0, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+  drawFeetShadow(ctx, player, pose, drawW, L);
 
   const drawX = -drawW / 2;
   const drawY = -drawH;
@@ -956,6 +1132,10 @@ function poseFor(player, L) {
   let sweat = 0;
   let climb = false;
   let climbSide = false;
+  let facingRight = true;
+  let dirX = 0;
+  let dirY = 0;
+  let airborne = 0;
   const step = G.step;
   const mine = step && (step.player === player || step.other === player);
   if (!mine) {
@@ -971,19 +1151,42 @@ function poseFor(player, L) {
       y = f.y + Math.sin(G.t * 2.4 + player.id) * L.cell * 0.018;
     }
   }
-  if (step && step.kind === "hop" && step.player === player) {
+  if (step && step.kind === "run" && step.player === player) {
+    const pts = step._pts || (step._pts = buildRunPath(step, L));
+    const total = step._totalLen || (step._totalLen = pathLength(pts));
+    const dist = Math.min(total, (step.t / step.dur) * total);
+    const pos = pointAtDist(pts, dist);
+    x = pos.x;
+    y = pos.y;
+    dirX = pos.dirX;
+    dirY = pos.dirY;
+    facingRight = Math.abs(pos.dirX) > 0.08 ? pos.dirX >= 0 : center(step.to, L).x >= center(step.from, L).x;
+    airborne = 0;
+  } else if (step && step.kind === "hop" && step.player === player) {
     const u = step.t / step.dur;
+    const arc = step.dismount ? 0.35 : 0.4;
     const a = foot(player, step.from, L, false);
     const b = foot(player, step.to, L, true);
-    const eu = ease(Math.min(1, u));
-    x = lerp(a.x, b.x, eu);
-    y = lerp(a.y, b.y, eu) - Math.sin(Math.min(1, u) * Math.PI) * L.cell * 0.42;
+    if (step.dismount) {
+      x = b.x;
+      y = b.y - Math.sin(Math.min(1, u) * Math.PI) * L.cell * arc;
+      facingRight = center(step.to, L).x >= center(Math.max(1, step.to - 1), L).x;
+    } else {
+      const eu = ease(Math.min(1, u));
+      x = lerp(a.x, b.x, eu);
+      y = lerp(a.y, b.y, eu) - Math.sin(Math.min(1, u) * Math.PI) * L.cell * arc;
+      facingRight = b.x >= a.x;
+      dirX = b.x - a.x;
+      dirY = b.y - a.y;
+    }
+    airborne = Math.sin(Math.min(1, u) * Math.PI);
     const stretch = Math.sin(Math.min(1, u) * Math.PI);
-    sx = 1 - stretch * 0.06;
-    sy = 1 + stretch * 0.06;
     if (u > 0.86) {
       sx = 1.08;
       sy = 0.9;
+    } else {
+      sx = 1 - stretch * 0.05;
+      sy = 1 + stretch * 0.05;
     }
   } else if (step && step.kind === "ladder" && step.player === player) {
     const u = Math.min(1, step.t / step.dur);
@@ -1068,7 +1271,25 @@ function poseFor(player, L) {
     arm = 2;
     y -= Math.abs(Math.sin(G.t * 6)) * L.cell * 0.04;
   }
-  return { x, y, sx, sy, rot, gulp, arm, panic, dizzy, sweat, climb, climbSide, spin: G.t * 7 };
+  return {
+    x,
+    y,
+    sx,
+    sy,
+    rot,
+    gulp,
+    arm,
+    panic,
+    dizzy,
+    sweat,
+    climb,
+    climbSide,
+    spin: G.t * 7,
+    facingRight,
+    dirX,
+    dirY,
+    airborne,
+  };
 }
 
 function drawRangoli(ctx, L) {
@@ -1138,10 +1359,12 @@ function render() {
   ctx.save();
   const zoom = G ? G.cam.zoom : 1;
   const rot = G ? G.cam.rot : 0;
+  const fx = G ? G.cam.focusX || L.w / 2 : L.w / 2;
+  const fy = G ? G.cam.focusY || L.h / 2 : L.h / 2;
   ctx.translate(L.w / 2, L.h / 2);
   ctx.rotate(rot);
   ctx.scale(zoom, zoom);
-  ctx.translate(-L.w / 2, -L.h / 2);
+  ctx.translate(-fx, -fy);
   drawBoard(ctx, L);
   for (const lad of LADDERS) drawLadder(ctx, lad, L);
   for (const sn of SNAKES) drawSnake(ctx, sn, L, "body");

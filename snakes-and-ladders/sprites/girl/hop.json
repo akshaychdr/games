@@ -5,5 +5,7 @@
  "frameHeight": 256,
  "sheetWidth": 3168,
  "layout": "horizontal",
- "loop": true
+ "loop": true,
+ "bodyHeightPx": 222.1,
+ "bodyHeightNote": "head-top to feet, in frame pixels, median over frames"
 }
