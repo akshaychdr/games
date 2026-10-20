@@ -48,7 +48,10 @@ const PIPS = {
 };
 
 const board = document.getElementById("board");
+const boardTop = document.getElementById("board-top");
+const piecesCanvas = document.getElementById("pieces");
 const dieCanvas = document.getElementById("die");
+let scene3d = null;
 const diceBtn = document.getElementById("dice");
 const muteBtn = document.getElementById("mute");
 const menu = document.getElementById("menu");
@@ -1245,22 +1248,31 @@ function render() {
   ctx.translate(-L.w / 2, -L.h / 2);
   drawBoard(ctx, L);
   for (const lad of LADDERS) drawLadder(ctx, lad, L);
-  for (const sn of SNAKES) drawSnake(ctx, sn, L, "body");
-  for (const sn of SNAKES) drawSnake(ctx, sn, L, "head");
-  drawNumbers(ctx, L);
   drawRangoli(ctx, L);
-  if (G) {
-    const moving = G.step && G.step.player;
-    const order = G.players.filter((p) => p !== moving);
-    if (moving) order.push(moving);
-    for (const p of order) {
-      if (p.pos > 0 || (G.step && G.step.player === p) || G.phase !== "win") drawKid(ctx, p, L);
-    }
-  }
   drawFx(ctx, L);
   ctx.restore();
+  if (boardTop) {
+    fit(boardTop);
+    const tctx = boardTop.getContext("2d");
+    tctx.clearRect(0, 0, L.w, L.h);
+    tctx.save();
+    tctx.translate(L.w / 2, L.h / 2);
+    tctx.rotate(rot);
+    tctx.scale(zoom, zoom);
+    tctx.translate(-L.w / 2, -L.h / 2);
+    drawNumbers(tctx, L);
+    tctx.restore();
+  }
+  if (piecesCanvas) fit(piecesCanvas);
   drawDie();
   syncHud();
+  if (scene3d) {
+    try {
+      scene3d.frame(L, { zoom, rot });
+    } catch (err) {
+      console.error(err);
+    }
+  }
 }
 
 function drawDie() {
@@ -1425,6 +1437,29 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 
+window.__saanpApi = {
+  getG: () => G,
+  layout,
+  poseFor,
+  foot,
+  snakePoints,
+  normalAt,
+  tangentAt,
+  SNAKES,
+  KURTA,
+  LOOK,
+};
+
+const scene3dReady = import("./scene3d.js")
+  .then((m) => {
+    if (piecesCanvas) scene3d = m.attach(piecesCanvas, () => window.__saanpApi);
+    return true;
+  })
+  .catch((err) => {
+    console.error(err);
+    return false;
+  });
+
 window.__saanp = {
   queueRolls(list) {
     if (G) G.rolls.push(...list);
@@ -1454,4 +1489,5 @@ window.__saanp = {
       seen: G.seen.slice(),
     };
   },
+  artReady: scene3dReady,
 };
