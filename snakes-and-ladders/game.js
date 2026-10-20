@@ -49,6 +49,7 @@ const SPRITE_NAMES = ["idle", "hop", "scared", "cheer", "climb", "run"];
 const SPRITES = { boy: {}, girl: {} };
 let spriteCanonBodyPx = 222;
 let spriteGenderMul = { boy: 1, girl: 1 };
+const SPRITE_PARITY_ANIMS = ["idle", "run", "hop", "cheer"];
 const RUN_SEC_PER_CELL = 0.17;
 
 const board = document.getElementById("board");
@@ -346,6 +347,8 @@ function begin(players) {
     lick: null,
     winT: 0,
     seen: [],
+    sixStreak: 0,
+    sixAnchorPos: 0,
   };
   G.msg = current().name + "'s turn";
   menu.hidden = true;
@@ -536,6 +539,7 @@ function endTurn(bonus) {
     scheduleCpu();
     return;
   }
+  G.sixStreak = 0;
   G.turn = (G.turn + 1) % G.players.length;
   G.phase = "roll";
   G.msg = current().name + "'s turn";
@@ -546,6 +550,21 @@ function finishStep() {
   const step = G.step;
   G.step = null;
   if (step.kind === "dice") {
+    const p = current();
+    if (step.value === 6) {
+      if (!G.sixStreak) G.sixAnchorPos = p.pos;
+      G.sixStreak += 1;
+      if (G.sixStreak >= 3) {
+        p.pos = G.sixAnchorPos;
+        G.queue = [];
+        G.sixStreak = 0;
+        endTurn(false);
+        G.msg = "Three sixes, turn lost!";
+        return;
+      }
+    } else {
+      G.sixStreak = 0;
+    }
     planMove(step.value);
     return;
   }
@@ -922,18 +941,45 @@ function star(ctx, x, y, r, rot) {
   ctx.fill();
 }
 
+function measureOpaqueBounds(img, fw, fh, frameIdx) {
+  const c = document.createElement("canvas");
+  c.width = fw;
+  c.height = fh;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, frameIdx * fw, 0, fw, fh, 0, 0, fw, fh);
+  const { data } = ctx.getImageData(0, 0, fw, fh);
+  let top = fh;
+  let bottom = -1;
+  for (let y = 0; y < fh; y++) {
+    for (let x = 0; x < fw; x++) {
+      if (data[(y * fw + x) * 4 + 3] > 16) {
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+  }
+  if (bottom < 0) return { top: 0, bottom: fh - 1, height: fh };
+  return { top, bottom, height: bottom - top + 1 };
+}
+
 function loadSpriteSheet(gender, name) {
   return fetch(`sprites/${gender}/${name}.json`)
     .then((r) => r.json())
     .then((meta) => new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        SPRITES[gender][name] = { ...meta, img };
+        const opaque = measureOpaqueBounds(img, meta.frameWidth, meta.frameHeight, 0);
+        SPRITES[gender][name] = { ...meta, img, opaque, boyOpaqueMul: 1 };
         resolve();
       };
       img.onerror = reject;
       img.src = `sprites/${gender}/${name}.png`;
     }));
+}
+
+function renderedOpaqueHeight(sheet, gender, L, gulp, applyBoyFix) {
+  const scale = spriteBodyScale(sheet, gender, L, gulp, applyBoyFix);
+  return sheet.opaque.height * scale;
 }
 
 function initSpriteBodyMetrics() {
@@ -944,6 +990,15 @@ function initSpriteBodyMetrics() {
     boy: spriteCanonBodyPx / boyIdle,
     girl: spriteCanonBodyPx / girlIdle,
   };
+  fit(board);
+  const L = layout();
+  for (const anim of SPRITE_PARITY_ANIMS) {
+    const gSheet = SPRITES.girl[anim];
+    const bSheet = SPRITES.boy[anim];
+    const girlH = renderedOpaqueHeight(gSheet, "girl", L, 1, true);
+    const boyH = renderedOpaqueHeight(bSheet, "boy", L, 1, false);
+    if (boyH > 0) bSheet.boyOpaqueMul = girlH / boyH;
+  }
 }
 
 const spritesReady = Promise.all(
@@ -981,14 +1036,16 @@ function spriteAnimFor(player, pose) {
   return { name: "idle", phase: G.t + player.id * 0.37, loop: true };
 }
 
-function spriteBodyScale(sheet, gender, L, gulp) {
+function spriteBodyScale(sheet, gender, L, gulp, applyBoyFix = true) {
   const idle = SPRITES[gender].idle;
   const idleBh = idle.bodyHeightPx || idle.frameHeight;
   const bh = sheet.bodyHeightPx || sheet.frameHeight;
   const target = L.cell * 1.1 * gulp;
   const animNorm = idleBh / bh;
   const genderMul = spriteGenderMul[gender] || 1;
-  return (target / spriteCanonBodyPx) * animNorm * genderMul;
+  let scale = (target / spriteCanonBodyPx) * animNorm * genderMul;
+  if (gender === "boy" && applyBoyFix && sheet.boyOpaqueMul) scale *= sheet.boyOpaqueMul;
+  return scale;
 }
 
 function spriteFrame(meta, anim) {
@@ -1052,7 +1109,7 @@ function drawKid(ctx, player, L) {
 
   drawFeetShadow(ctx, player, pose, drawW, L);
 
-  const feetFromTop = (sheet.bodyHeightPx || fh) * bodyScale;
+  const feetFromTop = (sheet.opaque.bottom + 0.5) * bodyScale;
   const drawX = -drawW / 2;
   const drawY = -feetFromTop;
   ctx.drawImage(sheet.img, fi * fw, 0, fw, fh, drawX, drawY, drawW, drawH);
@@ -1496,7 +1553,54 @@ window.__saanp = {
       winner: G.winner ? G.winner.name : null,
       lastRoll: G.lastRoll,
       seen: G.seen.slice(),
+      sixStreak: G.sixStreak || 0,
     };
+  },
+  measureKidHeights(applyBoyFix = true) {
+    fit(board);
+    const L = layout();
+    const out = {};
+    for (const anim of SPRITE_PARITY_ANIMS) {
+      for (const gender of ["boy", "girl"]) {
+        const sheet = SPRITES[gender][anim];
+        const scale = spriteBodyScale(sheet, gender, L, 1, applyBoyFix);
+        out[`${gender}_${anim}`] = Math.round(sheet.opaque.height * scale * 100) / 100;
+      }
+    }
+    return out;
+  },
+  measureBoardKidHeights() {
+    if (!G) return null;
+    fit(board);
+    render();
+    const L = layout();
+    const ctx = board.getContext("2d");
+    const sx = board.width / L.w;
+    const sy = board.height / L.h;
+    const out = {};
+    for (const p of G.players) {
+      if (p.pos <= 0) continue;
+      const gender = LOOK[p.kurta].kind;
+      const f = foot(p, p.pos, L, false);
+      const cx = Math.round(f.x * sx);
+      const cy = Math.round(f.y * sy);
+      const rx = Math.round(L.cell * sx * 0.22);
+      const up = Math.round(L.cell * sy * 1.35);
+      let top = cy;
+      let bottom = cy;
+      for (let y = cy - up; y <= cy + 2; y++) {
+        for (let x = cx - rx; x <= cx + rx; x++) {
+          if (x < 0 || y < 0 || x >= board.width || y >= board.height) continue;
+          const a = ctx.getImageData(x, y, 1, 1).data[3];
+          if (a > 24) {
+            if (y < top) top = y;
+            if (y > bottom) bottom = y;
+          }
+        }
+      }
+      out[gender] = Math.round((bottom - top) / sy * 100) / 100;
+    }
+    return out;
   },
   artReady: spritesReady,
 };
