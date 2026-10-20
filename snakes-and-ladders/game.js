@@ -48,13 +48,8 @@ const PIPS = {
 const SPRITE_NAMES = ["idle", "hop", "scared", "cheer", "climb", "run"];
 const SPRITES = { boy: {}, girl: {} };
 const RUN_SEC_PER_CELL = 0.17;
-const CAM_ZOOM_NARROW = 1.4;
-const CAM_ZOOM_WIDE = 1.8;
-const CAM_SETTLE_SEC = 0.4;
-const CAM_TILT_DEG = 12;
 
 const board = document.getElementById("board");
-const boardScene = document.getElementById("board-scene");
 const dieCanvas = document.getElementById("die");
 let artLoaded = false;
 const diceBtn = document.getElementById("dice");
@@ -232,18 +227,6 @@ function foot(player, square, L, pretend) {
   return { x: r.x + r.w * 0.5 + (idx - (group.length - 1) / 2) * spread, y: r.y + r.h * 0.96 };
 }
 
-function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-function boardBounds(L) {
-  return { minX: L.ox, minY: L.oy, maxX: L.ox + L.size, maxY: L.oy + L.size };
-}
-
-function narrowViewport() {
-  return window.innerWidth < 900;
-}
-
 function buildRunPath(step, L) {
   const pts = [foot(step.player, step.from, L, false)];
   for (let s = step.from + 1; s <= step.to; s++) pts.push(foot(step.player, s, L, true));
@@ -355,15 +338,6 @@ function begin(players) {
     fx: [],
     dieFx: [],
     glow: {},
-    cam: {
-      zoom: 1,
-      rot: 0,
-      focusX: null,
-      focusY: null,
-      tilt: 0,
-      following: false,
-      settleAt: 0,
-    },
     msg: "",
     winner: null,
     t: 0,
@@ -406,7 +380,6 @@ function planMove(roll) {
   const p = current();
   const dest = p.pos + roll;
   G.msg = p.name + " rolled " + roll;
-  G.cam.following = true;
   if (dest > 100) {
     G.queue.push({ kind: "overshoot", player: p, dur: moveDur(0.62, p.cpu) });
     G.queue.push({ kind: "end", bonus: roll === 6 });
@@ -493,7 +466,6 @@ function celebrate(p) {
   G.step = null;
   G.queue = [];
   G.winT = G.t;
-  G.cam.settleAt = G.t + CAM_SETTLE_SEC;
   G.msg = p.name + " reaches 100!";
   audio.dhol();
   for (let i = 0; i < 80; i++) {
@@ -565,8 +537,6 @@ function endTurn(bonus) {
   G.turn = (G.turn + 1) % G.players.length;
   G.phase = "roll";
   G.msg = current().name + "'s turn";
-  G.cam.settleAt = G.t + CAM_SETTLE_SEC;
-  G.cam.following = true;
   scheduleCpu();
 }
 
@@ -599,51 +569,6 @@ function spawnDust(square) {
   }
 }
 
-function followStepActive() {
-  if (!G) return false;
-  const s = G.step;
-  if (s && ["run", "hop", "ladder", "snake", "overshoot"].includes(s.kind)) return true;
-  return G.cam.following && G.t < G.cam.settleAt;
-}
-
-function updateCamera(dt) {
-  if (!G) return;
-  const L = layout();
-  if (G.cam.focusX == null) {
-    G.cam.focusX = L.w / 2;
-    G.cam.focusY = L.h / 2;
-  }
-  const cpu = current().cpu;
-  const rate = (cpu ? 8.5 : 5.2) * (reduceMotion ? 2 : 1);
-  const follow = !reduceMotion && followStepActive();
-  if (!follow && G.t >= G.cam.settleAt) G.cam.following = false;
-  const wantZ = follow ? (narrowViewport() ? CAM_ZOOM_NARROW : CAM_ZOOM_WIDE) : 1;
-  const wantTilt = follow ? CAM_TILT_DEG : 0;
-  let tx = G.cam.focusX;
-  let ty = G.cam.focusY;
-  if (follow) {
-    const mover = G.step && G.step.player ? G.step.player : current();
-    const pose = poseFor(mover, L);
-    if (pose) {
-      tx = pose.x + (pose.dirX || 0) * L.cell * 0.34;
-      ty = pose.y + (pose.dirY || 0) * L.cell * 0.34;
-    }
-  } else {
-    tx = L.w / 2;
-    ty = L.h / 2;
-  }
-  const z = G.cam.zoom + (wantZ - G.cam.zoom) * Math.min(1, dt * rate);
-  G.cam.zoom = z;
-  const hw = (L.w / 2) / Math.max(1, z);
-  const hh = (L.h / 2) / Math.max(1, z);
-  const b = boardBounds(L);
-  G.cam.focusX += (clamp(tx, b.minX + hw, b.maxX - hw) - G.cam.focusX) * Math.min(1, dt * rate);
-  G.cam.focusY += (clamp(ty, b.minY + hh, b.maxY - hh) - G.cam.focusY) * Math.min(1, dt * rate);
-  G.cam.tilt += (wantTilt - G.cam.tilt) * Math.min(1, dt * rate);
-  G.cam.rot += (0 - G.cam.rot) * Math.min(1, dt * rate);
-  if (boardScene) boardScene.style.transform = `rotateX(${G.cam.tilt.toFixed(2)}deg)`;
-}
-
 function tick(dt) {
   if (!G) return;
   G.t += dt;
@@ -669,7 +594,6 @@ function tick(dt) {
     }
     if (step.t >= step.dur) finishStep();
   }
-  updateCamera(dt);
   for (const k of Object.keys(G.glow)) {
     G.glow[k] -= dt * 0.85;
     if (G.glow[k] <= 0) delete G.glow[k];
@@ -1356,15 +1280,6 @@ function render() {
   ctx.clearRect(0, 0, L.w, L.h);
   ctx.fillStyle = "#3c342e";
   ctx.fillRect(0, 0, L.w, L.h);
-  ctx.save();
-  const zoom = G ? G.cam.zoom : 1;
-  const rot = G ? G.cam.rot : 0;
-  const fx = G ? G.cam.focusX || L.w / 2 : L.w / 2;
-  const fy = G ? G.cam.focusY || L.h / 2 : L.h / 2;
-  ctx.translate(L.w / 2, L.h / 2);
-  ctx.rotate(rot);
-  ctx.scale(zoom, zoom);
-  ctx.translate(-fx, -fy);
   drawBoard(ctx, L);
   for (const lad of LADDERS) drawLadder(ctx, lad, L);
   for (const sn of SNAKES) drawSnake(ctx, sn, L, "body");
@@ -1380,7 +1295,6 @@ function render() {
     }
   }
   drawFx(ctx, L);
-  ctx.restore();
   drawDie();
   syncHud();
 }
