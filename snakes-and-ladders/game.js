@@ -7,8 +7,6 @@ const LOOK = [
   { kind: "boy", cloth: "#4f6d62", accent: "#ead9b4" },
   { kind: "girl", cloth: "#7a5a86", accent: "#f0d5c8" },
 ];
-const SKIN = "#f0c09a";
-const HAIR = "#2a160f";
 const WASH = ["#f4ecdc", "#d9b59c", "#c9d4c2", "#e6d3b2"];
 const CONFETTI = ["#d4783a", "#b84a4a", "#4f6d62", "#e6d3a4", "#f4ecdc", "#7a5a86"];
 const NAMES = ["Anaya", "Vihaan", "Meera", "Kabir"];
@@ -47,11 +45,14 @@ const PIPS = {
   6: [[0, 0], [0, 1], [0, 2], [2, 0], [2, 1], [2, 2]],
 };
 
+const SPRITE_NAMES = ["idle", "hop", "scared", "cheer", "climb"];
+const SPRITES = { boy: {}, girl: {} };
+/** Visual body height in idle frames (px), feet at bottom of 256px strip. */
+const IDLE_BODY_PX = 224;
+
 const board = document.getElementById("board");
-const boardTop = document.getElementById("board-top");
-const piecesCanvas = document.getElementById("pieces");
 const dieCanvas = document.getElementById("die");
-let scene3d = null;
+let artLoaded = false;
 const diceBtn = document.getElementById("dice");
 const muteBtn = document.getElementById("mute");
 const menu = document.getElementById("menu");
@@ -329,6 +330,7 @@ function scheduleCpu() {
 }
 
 function performRoll() {
+  if (!artLoaded) return;
   if (!G || G.phase !== "roll") return;
   const value = G.rolls.length ? G.rolls.shift() : 1 + Math.floor(Math.random() * 6);
   G.lastRoll = value;
@@ -838,212 +840,106 @@ function star(ctx, x, y, r, rot) {
   ctx.fill();
 }
 
+function loadSpriteSheet(gender, name) {
+  return fetch(`sprites/${gender}/${name}.json`)
+    .then((r) => r.json())
+    .then((meta) => new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        SPRITES[gender][name] = { ...meta, img };
+        resolve();
+      };
+      img.onerror = reject;
+      img.src = `sprites/${gender}/${name}.png`;
+    }));
+}
+
+const spritesReady = Promise.all(
+  ["boy", "girl"].flatMap((g) => SPRITE_NAMES.map((n) => loadSpriteSheet(g, n))),
+).then(() => {
+  artLoaded = true;
+  syncHud();
+}).catch((err) => {
+  console.error("sprite load failed", err);
+});
+
+function ringColor(kurta) {
+  const base = KURTA[kurta];
+  if (kurta < 2) return base;
+  const accent = LOOK[kurta].accent;
+  return accent;
+}
+
+function spriteAnimFor(player, pose) {
+  const step = G && G.step;
+  if (pose.gulp < 0.04) return null;
+  if (step && step.kind === "snake" && step.player === player) {
+    const u = step.t / step.dur;
+    if (u >= 0.28 && u < 0.8) return null;
+    if (u < 0.28) return { name: "scared", phase: step.t, loop: false };
+    if (u >= 0.78 && pose.gulp < 0.92) return { name: "scared", phase: step.t - step.dur * 0.78, loop: false };
+  }
+  if (G && G.winner === player) return { name: "cheer", phase: G.t, loop: true };
+  if (step && step.kind === "ladder" && step.player === player) {
+    if (pose.arm === 2) return { name: "cheer", phase: G.t, loop: true };
+    return { name: "climb", phase: G.t, loop: true };
+  }
+  if (step && step.kind === "hop" && step.player === player) {
+    const u = Math.min(1, step.t / step.dur);
+    return { name: "hop", phase: u, loop: false, hop: true };
+  }
+  return { name: "idle", phase: G.t + player.id * 0.37, loop: true };
+}
+
+function spriteFrame(meta, anim) {
+  if (anim.hop) {
+    return Math.min(meta.frames - 1, Math.floor(anim.phase * meta.frames));
+  }
+  const f = anim.phase * meta.fps;
+  if (anim.loop) return Math.floor(f) % meta.frames;
+  return Math.min(meta.frames - 1, Math.floor(f));
+}
+
 function drawKid(ctx, player, L) {
   const pose = poseFor(player, L);
-  if (!pose || pose.gulp < 0.04) return;
-  const h = L.cell * 0.94 * pose.gulp;
-  const look = LOOK[player.kurta];
-  const girl = look.kind === "girl";
-  const now = G ? G.t : 0;
-  const cheer = pose.arm === 2 && !pose.panic && !pose.dizzy;
-  const blink = !pose.panic && !pose.dizzy && Math.sin(now * 1.7 + player.id * 2.1) > 0.93;
+  if (!pose) return;
+  const anim = spriteAnimFor(player, pose);
+  if (!anim) return;
+  const gender = LOOK[player.kurta].kind;
+  const sheet = SPRITES[gender][anim.name];
+  if (!sheet || !sheet.img) return;
+  const fi = spriteFrame(sheet, anim);
+  const fw = sheet.frameWidth;
+  const fh = sheet.frameHeight;
+  const bodyScale = (L.cell * 1.1 * pose.gulp) / IDLE_BODY_PX;
+  const drawH = fh * bodyScale;
+  const drawW = fw * bodyScale;
+
   ctx.save();
   ctx.translate(pose.x, pose.y);
-  ctx.rotate(pose.rot || 0);
-  ctx.scale(pose.sx, pose.sy);
+  if (pose.rot) ctx.rotate(pose.rot);
+
   ctx.fillStyle = "rgba(70, 48, 30, 0.28)";
   ctx.beginPath();
-  ctx.ellipse(0, h * 0.02, h * 0.26, h * 0.055, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, L.cell * 0.01, drawW * 0.22, L.cell * 0.055, 0, 0, Math.PI * 2);
   ctx.fill();
+
   ctx.fillStyle = KURTA[player.kurta];
   ctx.globalAlpha = 0.32;
   ctx.beginPath();
-  ctx.ellipse(0, h * 0.01, h * 0.36, h * 0.045, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, L.cell * 0.008, drawW * 0.3, L.cell * 0.042, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.globalAlpha = 0.95;
-  ctx.strokeStyle = KURTA[player.kurta];
-  ctx.lineWidth = Math.max(1.5, h * 0.04);
+  ctx.strokeStyle = ringColor(player.kurta);
+  ctx.lineWidth = Math.max(1.5, L.cell * 0.04);
+  ctx.beginPath();
+  ctx.ellipse(0, L.cell * 0.008, drawW * 0.3, L.cell * 0.042, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.globalAlpha = 1;
-  if (girl) {
-    ctx.fillStyle = HAIR;
-    ctx.beginPath();
-    ctx.moveTo(-h * 0.16, -h * 0.7);
-    ctx.quadraticCurveTo(-h * 0.32, -h * 0.42, -h * 0.18, -h * 0.2);
-    ctx.lineTo(-h * 0.08, -h * 0.22);
-    ctx.quadraticCurveTo(-h * 0.16, -h * 0.46, -h * 0.08, -h * 0.68);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(h * 0.16, -h * 0.7);
-    ctx.quadraticCurveTo(h * 0.32, -h * 0.42, h * 0.18, -h * 0.2);
-    ctx.lineTo(h * 0.08, -h * 0.22);
-    ctx.quadraticCurveTo(h * 0.16, -h * 0.46, h * 0.08, -h * 0.68);
-    ctx.fill();
-    ctx.fillStyle = look.cloth;
-    ctx.beginPath();
-    ctx.moveTo(-h * 0.16, -h * 0.5);
-    ctx.lineTo(h * 0.16, -h * 0.5);
-    ctx.lineTo(h * 0.28, -h * 0.04);
-    ctx.quadraticCurveTo(0, h * 0.02, -h * 0.28, -h * 0.04);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = look.accent;
-    ctx.lineWidth = Math.max(1, h * 0.02);
-    ctx.beginPath();
-    ctx.moveTo(-h * 0.22, -h * 0.1);
-    ctx.quadraticCurveTo(0, -h * 0.04, h * 0.22, -h * 0.1);
-    ctx.stroke();
-    roundRect(ctx, -h * 0.15, -h * 0.56, h * 0.3, h * 0.1, h * 0.04);
-    ctx.fillStyle = look.cloth;
-    ctx.fill();
-  } else {
-    ctx.fillStyle = "#f7f3ea";
-    roundRect(ctx, -h * 0.15, -h * 0.2, h * 0.1, h * 0.2, h * 0.04);
-    ctx.fill();
-    roundRect(ctx, h * 0.05, -h * 0.2, h * 0.1, h * 0.2, h * 0.04);
-    ctx.fill();
-    ctx.fillStyle = look.cloth;
-    roundRect(ctx, -h * 0.22, -h * 0.52, h * 0.44, h * 0.36, h * 0.1);
-    ctx.fill();
-    ctx.strokeStyle = look.accent;
-    ctx.lineWidth = Math.max(1, h * 0.018);
-    ctx.beginPath();
-    ctx.moveTo(0, -h * 0.48);
-    ctx.lineTo(0, -h * 0.2);
-    ctx.stroke();
-  }
-  let left = Math.PI - 0.45;
-  let right = 0.45;
-  if (pose.arm === 1 || pose.arm === 2) {
-    left = -Math.PI + 0.65;
-    right = -0.65;
-  } else if (pose.climb) {
-    left = pose.climbSide ? -Math.PI + 0.85 : Math.PI - 0.5;
-    right = pose.climbSide ? 0.55 : -0.85;
-  }
-  ctx.lineCap = "round";
-  const arms = [
-    [-h * 0.18, left],
-    [h * 0.18, right],
-  ];
-  for (const [x0, ang] of arms) {
-    const len = h * 0.26;
-    const y0 = -h * 0.48;
-    const mx = x0 + Math.cos(ang) * len * 0.5;
-    const my = y0 + Math.sin(ang) * len * 0.5;
-    const x1 = x0 + Math.cos(ang) * len;
-    const y1 = y0 + Math.sin(ang) * len;
-    ctx.strokeStyle = look.cloth;
-    ctx.lineWidth = h * 0.11;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(mx, my);
-    ctx.stroke();
-    ctx.strokeStyle = SKIN;
-    ctx.lineWidth = h * 0.08;
-    ctx.beginPath();
-    ctx.moveTo(mx, my);
-    ctx.lineTo(x1, y1);
-    ctx.stroke();
-    ctx.fillStyle = SKIN;
-    ctx.beginPath();
-    ctx.arc(x1, y1, h * 0.045, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.fillStyle = SKIN;
-  ctx.beginPath();
-  ctx.arc(0, -h * 0.7, h * 0.22, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = HAIR;
-  ctx.beginPath();
-  ctx.arc(0, -h * 0.72, h * 0.22, Math.PI * 1.08, Math.PI * 1.92);
-  ctx.fill();
-  if (girl) {
-    ctx.beginPath();
-    ctx.ellipse(0, -h * 0.9, h * 0.16, h * 0.1, 0, Math.PI, Math.PI * 2);
-    ctx.fill();
-  } else {
-    ctx.fillStyle = look.cloth;
-    ctx.beginPath();
-    ctx.ellipse(0, -h * 0.9, h * 0.16, h * 0.1, 0, Math.PI, Math.PI * 2);
-    ctx.fill();
-    ctx.fillRect(-h * 0.17, -h * 0.92, h * 0.34, h * 0.04);
-    ctx.strokeStyle = look.accent;
-    ctx.lineWidth = Math.max(1, h * 0.018);
-    ctx.beginPath();
-    ctx.moveTo(-h * 0.07, -h * 0.95);
-    ctx.lineTo(0, -h * 0.925);
-    ctx.lineTo(h * 0.07, -h * 0.95);
-    ctx.stroke();
-  }
-  const ey = -h * 0.68;
-  for (const dx of [-h * 0.09, h * 0.09]) {
-    ctx.fillStyle = "rgba(196, 106, 98, 0.4)";
-    ctx.beginPath();
-    ctx.ellipse(dx, ey + h * 0.1, h * 0.04, h * 0.025, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  if (pose.dizzy) {
-    ctx.strokeStyle = "#3a2418";
-    ctx.lineWidth = Math.max(1.5, h * 0.035);
-    for (const dx of [-h * 0.08, h * 0.08]) {
-      ctx.beginPath();
-      ctx.arc(dx, ey, h * 0.055, pose.spin, pose.spin + Math.PI * 1.4);
-      ctx.stroke();
-    }
-  } else if (blink) {
-    ctx.strokeStyle = "#3a2418";
-    ctx.lineWidth = Math.max(1.5, h * 0.03);
-    ctx.lineCap = "round";
-    for (const dx of [-h * 0.08, h * 0.08]) {
-      ctx.beginPath();
-      ctx.moveTo(dx - h * 0.06, ey);
-      ctx.quadraticCurveTo(dx, ey + h * 0.025, dx + h * 0.06, ey);
-      ctx.stroke();
-    }
-  } else {
-    const ry = pose.panic ? h * 0.11 : h * 0.095;
-    const rx = h * 0.075;
-    for (const dx of [-h * 0.08, h * 0.08]) {
-      ctx.fillStyle = "#fffaf2";
-      ctx.beginPath();
-      ctx.ellipse(dx, ey, rx, ry, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(60, 36, 28, 0.35)";
-      ctx.lineWidth = Math.max(1, h * 0.012);
-      ctx.stroke();
-      ctx.fillStyle = "#2a1a14";
-      ctx.beginPath();
-      ctx.arc(dx, ey + ry * 0.12, pose.panic ? h * 0.032 : h * 0.042, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#fff";
-      ctx.beginPath();
-      ctx.arc(dx - rx * 0.3, ey - ry * 0.28, h * 0.02, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  ctx.strokeStyle = pose.panic ? "#7a2430" : "#c46a62";
-  ctx.lineWidth = Math.max(1, h * 0.028);
-  ctx.beginPath();
-  if (pose.panic) ctx.ellipse(0, ey + h * 0.11, h * 0.04, h * 0.05, 0, 0, Math.PI * 2);
-  else if (pose.dizzy) ctx.arc(0, ey + h * 0.1, h * 0.04, 0.15, Math.PI - 0.15);
-  else ctx.arc(0, ey + h * (cheer ? 0.05 : 0.07), h * (cheer ? 0.07 : 0.05), 0.15, Math.PI - 0.15);
-  if (pose.panic) ctx.fillStyle = "#7a2430";
-  if (pose.panic) ctx.fill();
-  else ctx.stroke();
-  if (pose.sweat > 0) {
-    ctx.fillStyle = "rgba(180, 210, 220, 0.9)";
-    ctx.beginPath();
-    ctx.ellipse(h * 0.2, -h * 0.9 + pose.sweat * h * 0.55, h * 0.03, h * 0.045, 0.4, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  if (pose.dizzy) {
-    ctx.fillStyle = "#e6d3a4";
-    for (let i = 0; i < 3; i++) {
-      const a = pose.spin + (i * Math.PI * 2) / 3;
-      star(ctx, Math.cos(a) * h * 0.34, -h * 0.95 + Math.sin(a) * h * 0.08, h * 0.045, a);
-    }
-  }
+
+  const drawX = -drawW / 2;
+  const drawY = -drawH;
+  ctx.drawImage(sheet.img, fi * fw, 0, fw, fh, drawX, drawY, drawW, drawH);
   ctx.restore();
 }
 
@@ -1248,31 +1144,22 @@ function render() {
   ctx.translate(-L.w / 2, -L.h / 2);
   drawBoard(ctx, L);
   for (const lad of LADDERS) drawLadder(ctx, lad, L);
+  for (const sn of SNAKES) drawSnake(ctx, sn, L, "body");
+  for (const sn of SNAKES) drawSnake(ctx, sn, L, "head");
+  drawNumbers(ctx, L);
   drawRangoli(ctx, L);
-  drawFx(ctx, L);
-  ctx.restore();
-  if (boardTop) {
-    fit(boardTop);
-    const tctx = boardTop.getContext("2d");
-    tctx.clearRect(0, 0, L.w, L.h);
-    tctx.save();
-    tctx.translate(L.w / 2, L.h / 2);
-    tctx.rotate(rot);
-    tctx.scale(zoom, zoom);
-    tctx.translate(-L.w / 2, -L.h / 2);
-    drawNumbers(tctx, L);
-    tctx.restore();
-  }
-  if (piecesCanvas) fit(piecesCanvas);
-  drawDie();
-  syncHud();
-  if (scene3d) {
-    try {
-      scene3d.frame(L, { zoom, rot });
-    } catch (err) {
-      console.error(err);
+  if (G) {
+    const moving = G.step && G.step.player;
+    const order = G.players.filter((p) => p !== moving);
+    if (moving) order.push(moving);
+    for (const p of order) {
+      if (p.pos > 0 || (G.step && G.step.player === p) || G.phase !== "win") drawKid(ctx, p, L);
     }
   }
+  drawFx(ctx, L);
+  ctx.restore();
+  drawDie();
+  syncHud();
 }
 
 function drawDie() {
@@ -1346,7 +1233,7 @@ function syncHud() {
     li.querySelector("b").textContent = p.pos ? String(p.pos) : "–";
   });
   status.textContent = G.msg;
-  const ready = G.phase === "roll" && !current().cpu;
+  const ready = artLoaded && G.phase === "roll" && !current().cpu;
   diceBtn.disabled = !ready;
   diceBtn.setAttribute("aria-label", ready ? "Roll for " + current().name : "Dice");
 }
@@ -1437,30 +1324,6 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 
-window.__saanpApi = {
-  getG: () => G,
-  layout,
-  poseFor,
-  foot,
-  snakePoints,
-  normalAt,
-  tangentAt,
-  center,
-  SNAKES,
-  KURTA,
-  LOOK,
-};
-
-const scene3dReady = import("./scene3d.js")
-  .then((m) => {
-    if (piecesCanvas) scene3d = m.attach(piecesCanvas, () => window.__saanpApi);
-    return true;
-  })
-  .catch((err) => {
-    console.error(err);
-    return false;
-  });
-
 window.__saanp = {
   queueRolls(list) {
     if (G) G.rolls.push(...list);
@@ -1490,5 +1353,5 @@ window.__saanp = {
       seen: G.seen.slice(),
     };
   },
-  artReady: scene3dReady,
+  artReady: spritesReady,
 };

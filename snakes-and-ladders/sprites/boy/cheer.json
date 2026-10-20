@@ -1,0 +1,9 @@
+{
+ "frames": 24,
+ "fps": 12,
+ "frameWidth": 136,
+ "frameHeight": 256,
+ "sheetWidth": 3264,
+ "layout": "horizontal",
+ "loop": true
+}

@@ -30,26 +30,13 @@
       align-items: end;
       padding: 8px 8px 4px;
     }
-    #board-stack {
-      position: relative;
+    #board {
       width: min(100%, calc(100dvh - 196px));
       max-height: calc(100dvh - 196px);
+      height: auto;
       aspect-ratio: 1;
       touch-action: none;
-    }
-    #board-stack canvas {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
       border-radius: 4px;
-      touch-action: none;
-    }
-    #pieces {
-      pointer-events: none;
-    }
-    #board-top {
-      pointer-events: none;
     }
     #dock {
       display: grid;
@@ -239,7 +226,7 @@
         grid-template-rows: minmax(0, 1fr);
       }
       #stage { align-items: center; padding: 12px; }
-      #board-stack {
+      #board {
         width: min(100%, calc(100dvh - 24px));
         max-height: calc(100dvh - 24px);
       }
@@ -264,11 +251,7 @@
 </head>
 <body>
   <div id="stage">
-    <div id="board-stack">
-      <canvas id="board" width="800" height="800"></canvas>
-      <canvas id="pieces" width="800" height="800"></canvas>
-      <canvas id="board-top" width="800" height="800"></canvas>
-    </div>
+    <canvas id="board" width="800" height="800"></canvas>
   </div>
   <aside id="dock">
     <div class="top">
@@ -304,13 +287,6 @@
       <button id="menu-back" class="go" type="button">Change players</button>
     </div>
   </section>
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
-    }
-  }
-  </script>
   <script src="game.js"></script>
 </body>
 </html>
